@@ -57,8 +57,8 @@ type findNode struct {
 	}
 }
 
-// InitializeDht Create a listening socket, allocate spaces for storing nodes and dht status.
-func InitializeDht() *Dht {
+// New Create a listening socket, allocate spaces for storing nodes and dht status.
+func New() *Dht {
 	dht := new(Dht)
 
 	dht.selfid = generateRandNodeid()

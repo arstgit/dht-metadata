@@ -9,7 +9,7 @@ import (
 func main() {
 	log.Println("Starting.")
 
-	dht := dht.InitializeDht()
+	dht := dht.New()
 	log.Printf("Dht status: %s", dht.YieldStatus())
 
 	dht.FarmStep()
