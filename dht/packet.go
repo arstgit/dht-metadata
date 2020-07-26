@@ -2,14 +2,16 @@ package dht
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"syscall"
 
 	"github.com/anacrolix/torrent/bencode"
 )
 
-func (dht *Dht) processFindNodeRes(buf []byte) {
+func (dht *Dht) processFindNodeRes(node *node, buf []byte) {
 	type findNodeRes struct {
 		T string `bencode:"t"`
 		Y string `bencode:"y"`
@@ -25,6 +27,10 @@ func (dht *Dht) processFindNodeRes(buf []byte) {
 		if _, ok := err.(bencode.ErrUnusedTrailingBytes); !ok {
 			log.Fatal("processRecv ", err)
 		}
+	}
+
+	if node.tid != res.T {
+		log.Fatal("node.tid is not match res.T")
 	}
 
 	compactNodes := []byte(res.R.NODES)
@@ -51,7 +57,7 @@ func (dht *Dht) processRecv(fd int, buf []byte, n int, fromAddr syscall.Sockaddr
 
 	switch node.sentType {
 	case "find_node":
-		dht.processFindNodeRes(buf)
+		dht.processFindNodeRes(node, buf)
 	default:
 		log.Fatal("node.sentType ", node.sentType)
 	}
@@ -112,6 +118,7 @@ func (dht *Dht) SendFindNodeRandom() {
 		fd = allocateDgramSocket(dht.efd)
 	}
 
+	log.Printf("sendto %v", dstAddr)
 	err := syscall.Sendto(fd, payload, 0, &dstAddr)
 	if err != nil {
 		log.Fatal("sendto ", err)
@@ -129,7 +136,7 @@ func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
 
 	addr := syscall.SockaddrInet4{Port: int(binary.BigEndian.Uint16(port1))}
 
-	binary.LittleEndian.PutUint32(addr.Addr[:], binary.BigEndian.Uint32(ip1))
+	copy(addr.Addr[:], ip1)
 	return addr
 }
 
@@ -145,4 +152,10 @@ func (dht *Dht) findNodeByFd(fd int) *node {
 	}
 
 	return nil
+}
+
+func generateTid() string {
+	s := fmt.Sprintf("%s", string(rand.Intn(256)))
+
+	return s
 }
