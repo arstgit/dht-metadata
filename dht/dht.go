@@ -2,20 +2,37 @@
 package dht
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 	"unsafe"
-	"syscall"
 
 	"github.com/anacrolix/torrent/bencode"
 )
 
-const bootstrap1 = "router.utorrent.com:6881"
+const (
+	// EPOLLET uint32
+	EPOLLET = 1 << 31
+	// MaxEpollEvents num
+	MaxEpollEvents = 32
+)
+
+// router.utorrent.com
+const bootstrap1 = "82.221.103.244:6881"
 
 type nodeid [20]byte
+
+func (id nodeid) toString() string {
+	var tmp = [20]byte(id)
+
+	return string(tmp[:])
+}
 
 type dhtStatus int
 
@@ -25,6 +42,7 @@ const (
 )
 
 type nodeStatus int
+type compactAddr string
 
 const (
 	live nodeStatus = iota
@@ -33,28 +51,28 @@ const (
 
 type node struct {
 	id         nodeid
-	address    string
+	address    compactAddr
 	lastActive time.Time
 	status     nodeStatus
-	listener net.PacketConn
+	fd         int
 }
 
 // Dht maintain running status.
 type Dht struct {
-	efd int
-	selfid   nodeid
-	status   dhtStatus
-	nodes    []node
+	efd    int
+	selfid nodeid
+	status dhtStatus
+	nodes  []node
 }
 
-type findNode struct {
-	T string `json:"t"`
-	y string
-	q string
-	a struct {
-		id     string
-		target string
-	}
+type findNodeMsg struct {
+	T string `bencode:"t"`
+	Y string `bencode:"y"`
+	Q string `bencode:"q"`
+	A struct {
+		ID     string `bencode:"id"`
+		TARGET string `bencode:"target"`
+	} `bencode:"a"`
 }
 
 // New Create a listening socket, allocate spaces for storing nodes and dht status.
@@ -62,7 +80,9 @@ func New() *Dht {
 	dht := new(Dht)
 
 	dht.selfid = generateRandNodeid()
-	dht.nodes = append(dht.nodes, node{address: bootstrap1, lastActive: time.Now(), status: live})
+	// push bootstrap node into dht.
+
+	dht.nodes = append(dht.nodes, node{address: convertToCompactAddr(bootstrap1), lastActive: time.Now(), status: live})
 
 	efd, err := syscall.EpollCreate1(0)
 	if err != nil {
@@ -75,12 +95,42 @@ func New() *Dht {
 	return dht
 }
 
+func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
+	ip1 := []byte(ca)[:4]
+	port1 := []byte(ca)[4:6]
+
+	addr := syscall.SockaddrInet4{Port: int(binary.BigEndian.Uint16(port1))}
+
+	binary.LittleEndian.PutUint32(addr.Addr[:], binary.BigEndian.Uint32(ip1))
+	return addr
+}
+
+func convertToCompactAddr(s string) compactAddr {
+	arr := strings.Split(s, ":")
+	ip := arr[0]
+	port := arr[1]
+
+	ip1 := binary.LittleEndian.Uint32(net.ParseIP(ip).To4())
+	port1, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ip2 := make([]byte, 4)
+	port2 := make([]byte, 2)
+
+	binary.BigEndian.PutUint32(ip2, uint32(ip1))
+	binary.BigEndian.PutUint16(port2, uint16(port1))
+
+	return compactAddr(append(ip2, port2...))
+}
+
 // FreeDht free allocated space.
 func (dht *Dht) FreeDht() {
 	syscall.Close(dht.efd)
 
 	for _, node := range dht.nodes {
-		err := node.listener.Close()
+		err := syscall.Close(node.fd)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -96,41 +146,90 @@ func (dht *Dht) YieldStatus() string {
 	return s
 }
 
-// FarmStep makes the farming node action proceeds.
-func (dht *Dht) FarmStep() {
+// Run send packets while listening active node port.
+func (dht *Dht) Run() {
+	ticker := time.NewTicker(2 * time.Second)
 
+	for {
+		select {
+		case <-ticker.C:
+			log.Print("tic, SendFindNodeRandom")
+			dht.SentFindNodeRandom()
+		default:
+			time.Sleep(1 * time.Second)
+
+			dht.waitEpoll(1000)
+		}
+	}
+
+	// ticker.Stop()
+}
+func (dht *Dht) waitEpoll(timeout int) {
+	var events [MaxEpollEvents]syscall.EpollEvent
+
+	nevents, err := syscall.EpollWait(dht.efd, events[:], timeout)
+	if err != nil {
+		log.Fatal("epoll_wait ", err)
+	}
+
+	for i := 0; i < nevents; i++ {
+		fd := int(events[i].Fd)
+
+		buf := make([]byte, 1500)
+		n, fromAddr, err := syscall.Recvfrom(fd, buf, 0)
+		if err != nil {
+			log.Fatal(err)
+		}
+		processRecv(fd, buf, n, fromAddr)
+
+	}
 }
 
-// FindNodeRandom sent find_node query to random node for random target.
-func (dht *Dht) FindNodeRandom() {
-	//bencode.Decoder()
+func processRecv(fd int, buf []byte, n int, fromAddr syscall.Sockaddr) {
+	log.Println(fd, n, fromAddr)
+}
 
+// SentFindNodeRandom sent find_node query to random node for random target.
+func (dht *Dht) SentFindNodeRandom() {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.O_NONBLOCK|syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	addr := syscall.SockaddrInet4{Port: 0}
+	n := copy(addr.Addr[:], net.ParseIP("0.0.0.0").To4())
+	if n != 4 {
+		log.Fatal("copy addr not 4 bytes")
+	}
+
+	syscall.Bind(fd, &addr)
+	syscall.Listen(fd, 8)
+
+	targetNode := dht.getRandomNode()
+	targetNode.fd = fd
 
 	tid := generateTid()
-	msg := findNode{T: tid, y: "q", q: "find_node", }
+	msg := findNodeMsg{T: tid, Y: "q", Q: "find_node", A: struct {
+		ID     string `bencode:"id"`
+		TARGET string `bencode:"target"`
+	}{ID: string(dht.selfid.toString()), TARGET: generateRandNodeid().toString()}}
 	payload := bencode.MustMarshal(msg)
-	log.Printf("marshal: %x", payload)
-	targetNode := dht.getRandomNode()
+	log.Printf("FindNodeRandom , marshal: %s", payload)
 
-	conn, err := net.ListenPacket("udp", ":0")
+	dstAddr := targetNode.address.toSockAddr()
+	err = syscall.Sendto(fd, payload, 0, &dstAddr)
 	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	dst, err := net.ResolveUDPAddr("udp", targetNode.address)
-	if err != nil {
-		log.Fatal(err)
+		log.Fatal("sendto ", err)
 	}
 
-	conn.WriteTo(payload, dst)
-	if err != nil {
+	var event syscall.EpollEvent
+
+	event.Events = syscall.EPOLLIN | EPOLLET
+	event.Fd = int32(fd)
+	if err := syscall.EpollCtl(dht.efd, syscall.EPOLL_CTL_ADD, fd, &event); err != nil {
 		log.Fatal(err)
 	}
 
-	targetNode.listener = conn
-
-	fd := conn
 }
 
 func (dht *Dht) removeNode(i int) {
@@ -156,8 +255,6 @@ func generateRandNodeid() nodeid {
 	for i := 0; i < 5; i++ {
 		copy(id[i*4:], (*[4]byte)(unsafe.Pointer(&r))[:])
 	}
-
-	log.Printf("generate nodeid: %x", id)
 
 	return id
 }

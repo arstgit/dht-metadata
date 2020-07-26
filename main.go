@@ -12,7 +12,7 @@ func main() {
 	dht := dht.New()
 	log.Printf("Dht status: %s", dht.YieldStatus())
 
-	dht.FarmStep()
+	dht.Run()
 
 	dht.FreeDht()
 }
