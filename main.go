@@ -10,7 +10,6 @@ func main() {
 	log.Println("Starting.")
 
 	dht := dht.New()
-	log.Printf("Dht status: %s", dht.YieldStatus())
 
 	dht.Run()
 

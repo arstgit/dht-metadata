@@ -12,13 +12,55 @@ import (
 	"github.com/anacrolix/torrent/bencode"
 )
 
+func (dht *Dht) processGetPeersRes(node *node, buf []byte) {
+	type getPeersRes struct {
+		T string `bencode:"t"`
+		Y string `bencode:"y"`
+		R struct {
+			ID    string `bencode:"id"`
+			Token string `bencode:"token"`
+			Values []string `bencode:"values"`
+			Nodes string `bencode:"nodes"`
+		} `bencode:"r"`
+	}
+
+	res := &getPeersRes{}
+	err := bencode.Unmarshal(buf, res)
+	if err != nil {
+		if _, ok := err.(bencode.ErrUnusedTrailingBytes); !ok {
+			log.Fatal("processRecv ", err)
+		}
+	}
+
+	log.Printf("%#v", res)
+
+	if node.tid != res.T {
+		log.Print("node.tid is not match res.T")
+		node.status = unhealthy
+		return
+	}
+
+	compactNodes := []byte(res.R.Nodes)
+
+	if len(compactNodes)%26 != 0 {
+		log.Fatal("len(compactNodes) % 26 != 0")
+	}
+
+	err = syscall.Close(node.fd)
+	if err != nil {
+		log.Fatal("close ", err)
+	}
+	node.fd = -1
+	node.status = verified
+	node.lastActive = time.Now()
+}
 func (dht *Dht) processFindNodeRes(node *node, buf []byte) {
 	type findNodeRes struct {
 		T string `bencode:"t"`
 		Y string `bencode:"y"`
 		R struct {
 			ID    string `bencode:"id"`
-			NODES string `bencode:"nodes"`
+			Nodes string `bencode:"nodes"`
 		} `bencode:"r"`
 	}
 
@@ -36,7 +78,7 @@ func (dht *Dht) processFindNodeRes(node *node, buf []byte) {
 		return
 	}
 
-	compactNodes := []byte(res.R.NODES)
+	compactNodes := []byte(res.R.Nodes)
 
 	if len(compactNodes)%26 != 0 {
 		log.Fatal("len(compactNodes) % 26 != 0")
@@ -66,7 +108,6 @@ func (dht *Dht) processFindNodeRes(node *node, buf []byte) {
 func (dht *Dht) processRecv(fd int, buf []byte, n int, fromAddr syscall.Sockaddr) {
 	node := dht.findNodeByFd(fd)
 
-	log.Printf("%#v", dht.nodes)
 	if node == nil {
 		log.Fatalf("node is nil, %d", fd)
 	}
@@ -77,9 +118,103 @@ func (dht *Dht) processRecv(fd int, buf []byte, n int, fromAddr syscall.Sockaddr
 	switch node.sentType {
 	case "find_node":
 		dht.processFindNodeRes(node, buf)
+	case "get_peers":
+		dht.processFindNodeRes(node, buf)
 	default:
 		log.Fatal("node.sentType ", node.sentType)
 	}
+}
+
+// SendGetPeers find the peer having the info hash
+func (dht *Dht) SendGetPeers() {
+	type getPeerReqA struct {
+		ID       string `bencode:"id"`
+		InfoHash string `bencode:"info_hash"`
+	}
+	type getPeersReq struct {
+		T string      `bencode:"t"`
+		Y string      `bencode:"y"`
+		Q string      `bencode:"q"`
+		A getPeerReqA `bencode:"a"`
+	}
+
+	tid := generateTid()
+	msg := getPeersReq{T: tid, Y: "q", Q: "get_peers", A: getPeerReqA{ID: string(dht.selfid.toString()), InfoHash: examplehash}}
+	payload := bencode.MustMarshal(msg)
+
+	_, targetNode := dht.getNode(newAdded | verified)
+
+	dstAddr := targetNode.address.toSockAddr()
+
+	fd := targetNode.fd
+	if fd == -1 {
+		fd = allocateDgramSocket(dht.efd)
+	}
+
+	log.Printf("send get_peers to ip: %v", dstAddr.Addr)
+	err := syscall.Sendto(fd, payload, 0, &dstAddr)
+	if err != nil {
+		log.Fatalf("sendto fd: %d, err: %v", fd, err)
+	}
+
+	targetNode.fd = fd
+	targetNode.tid = tid
+	targetNode.sentType = "get_peers"
+	targetNode.status = waitForPacket
+}
+
+// SendFindNodeRandom sent find_node query to random node for random target.
+func (dht *Dht) SendFindNodeRandom() {
+	type findNodeReqA struct {
+			ID     string `bencode:"id"`
+			TARGET string `bencode:"target"`
+	}
+	type findNodeReq struct {
+		T string `bencode:"t"`
+		Y string `bencode:"y"`
+		Q string `bencode:"q"`
+		A findNodeReqA `bencode:"a"`
+	}
+
+	tid := generateTid()
+	msg := findNodeReq{T: tid, Y: "q", Q: "find_node", A: findNodeReqA{ID: string(dht.selfid.toString()), TARGET: generateRandNodeid().toString()}}
+	payload := bencode.MustMarshal(msg)
+
+	_, targetNode := dht.getNode(newAdded | verified)
+
+	dstAddr := targetNode.address.toSockAddr()
+
+	fd := targetNode.fd
+	if fd == -1 {
+		fd = allocateDgramSocket(dht.efd)
+	}
+
+	log.Printf("send find_node to ip: %v", dstAddr.Addr)
+	err := syscall.Sendto(fd, payload, 0, &dstAddr)
+	if err != nil {
+		log.Fatalf("sendto fd: %d, err: %v", fd, err)
+	}
+
+	targetNode.fd = fd
+	targetNode.tid = tid
+	targetNode.sentType = "find_node"
+	targetNode.status = waitForPacket
+}
+
+func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
+	ip1 := ca[:4]
+	port1 := ca[4:6]
+
+	addr := syscall.SockaddrInet4{Port: int(binary.BigEndian.Uint16(port1))}
+
+	copy(addr.Addr[:], ip1)
+	return addr
+}
+
+func generateTid() string {
+	s := fmt.Sprintf("%s", string(rand.Intn(256)))
+
+	return s
 }
 
 func allocateDgramSocket(efd int) int {
@@ -105,64 +240,4 @@ func allocateDgramSocket(efd int) int {
 	}
 
 	return fd
-}
-
-// SendFindNodeRandom sent find_node query to random node for random target.
-func (dht *Dht) SendFindNodeRandom() {
-	type findNodeReq struct {
-		T string `bencode:"t"`
-		Y string `bencode:"y"`
-		Q string `bencode:"q"`
-		A struct {
-			ID     string `bencode:"id"`
-			TARGET string `bencode:"target"`
-		} `bencode:"a"`
-	}
-
-	tid := generateTid()
-	msg := findNodeReq{T: tid, Y: "q", Q: "find_node", A: struct {
-		ID     string `bencode:"id"`
-		TARGET string `bencode:"target"`
-	}{ID: string(dht.selfid.toString()), TARGET: generateRandNodeid().toString()}}
-	payload := bencode.MustMarshal(msg)
-	log.Printf("FindNodeRandom , marshal: %s", payload)
-
-	_, targetNode := dht.getNode(newAdded | verified)
-
-	dstAddr := targetNode.address.toSockAddr()
-
-	fd := targetNode.fd
-	if fd == -1 {
-		fd = allocateDgramSocket(dht.efd)
-	}
-
-	log.Printf("sendto ip: %v", dstAddr.Addr)
-	err := syscall.Sendto(fd, payload, 0, &dstAddr)
-	if err != nil {
-		log.Fatalf("sendto fd: %d, err: %v", fd, err)
-	}
-
-	targetNode.fd = fd
-	targetNode.tid = tid
-	targetNode.sentType = "find_node"
-	targetNode.status = waitForPacket
-
-	log.Printf("%#v", targetNode)
-	log.Printf("%#v", dht.nodes)
-}
-
-func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
-	ip1 := ca[:4]
-	port1 := ca[4:6]
-
-	addr := syscall.SockaddrInet4{Port: int(binary.BigEndian.Uint16(port1))}
-
-	copy(addr.Addr[:], ip1)
-	return addr
-}
-
-func generateTid() string {
-	s := fmt.Sprintf("%s", string(rand.Intn(256)))
-
-	return s
 }
