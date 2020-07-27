@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"syscall"
+	"time"
 
 	"github.com/anacrolix/torrent/bencode"
 )
@@ -30,7 +31,9 @@ func (dht *Dht) processFindNodeRes(node *node, buf []byte) {
 	}
 
 	if node.tid != res.T {
-		log.Fatal("node.tid is not match res.T")
+		log.Print("node.tid is not match res.T")
+		node.status = unhealthy
+		return
 	}
 
 	compactNodes := []byte(res.R.NODES)
@@ -50,10 +53,26 @@ func (dht *Dht) processFindNodeRes(node *node, buf []byte) {
 
 		dht.addNode(addr, id)
 	}
+
+	err = syscall.Close(node.fd)
+	if err != nil {
+		log.Fatal("close ", err)
+	}
+	node.fd = -1
+	node.status = verified
+	node.lastActive = time.Now()
 }
 
 func (dht *Dht) processRecv(fd int, buf []byte, n int, fromAddr syscall.Sockaddr) {
 	node := dht.findNodeByFd(fd)
+
+	log.Printf("%#v", dht.nodes)
+	if node == nil {
+		log.Fatalf("node is nil, %d", fd)
+	}
+	if node.status != waitForPacket {
+		log.Fatal("node status not waitforpacket")
+	}
 
 	switch node.sentType {
 	case "find_node":
@@ -68,7 +87,6 @@ func allocateDgramSocket(efd int) int {
 	if err != nil {
 		log.Fatal("allocateDgramSocket socket ", err)
 	}
-
 	addr := syscall.SockaddrInet4{Port: 0}
 	n := copy(addr.Addr[:], net.ParseIP("0.0.0.0").To4())
 	if n != 4 {
@@ -76,7 +94,7 @@ func allocateDgramSocket(efd int) int {
 	}
 
 	syscall.Bind(fd, &addr)
-	syscall.Listen(fd, 8)
+	syscall.Listen(fd, 1)
 
 	var event syscall.EpollEvent
 
@@ -109,7 +127,7 @@ func (dht *Dht) SendFindNodeRandom() {
 	payload := bencode.MustMarshal(msg)
 	log.Printf("FindNodeRandom , marshal: %s", payload)
 
-	targetNode := dht.getRandomNode()
+	_, targetNode := dht.getNode(newAdded | verified)
 
 	dstAddr := targetNode.address.toSockAddr()
 
@@ -118,16 +136,19 @@ func (dht *Dht) SendFindNodeRandom() {
 		fd = allocateDgramSocket(dht.efd)
 	}
 
-	log.Printf("sendto %v", dstAddr)
+	log.Printf("sendto ip: %v", dstAddr.Addr)
 	err := syscall.Sendto(fd, payload, 0, &dstAddr)
 	if err != nil {
-		log.Fatal("sendto ", err)
+		log.Fatalf("sendto fd: %d, err: %v", fd, err)
 	}
 
 	targetNode.fd = fd
 	targetNode.tid = tid
 	targetNode.sentType = "find_node"
 	targetNode.status = waitForPacket
+
+	log.Printf("%#v", targetNode)
+	log.Printf("%#v", dht.nodes)
 }
 
 func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
@@ -138,20 +159,6 @@ func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
 
 	copy(addr.Addr[:], ip1)
 	return addr
-}
-
-func (dht *Dht) findNodeByFd(fd int) *node {
-	if !(fd > 2) {
-		log.Fatal("findNodeByFd, invalid fd")
-	}
-
-	for _, node := range dht.nodes {
-		if node.fd == fd {
-			return &node
-		}
-	}
-
-	return nil
 }
 
 func generateTid() string {

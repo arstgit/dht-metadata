@@ -24,10 +24,10 @@ type compactAddr [6]byte
 type nodeStatus int
 
 const (
-	newAdded nodeStatus = iota
+	newAdded nodeStatus = 1 << iota
 	waitForPacket
-	varified
-	dead
+	verified
+	unhealthy
 )
 
 type node struct {
@@ -35,7 +35,7 @@ type node struct {
 	address    compactAddr
 	lastActive time.Time
 	status     nodeStatus
-	fd         int // -1 means not allocated yet
+	fd         int // -1 means not allocated yet. Do not dup it because of epoll interest list.
 	sentType   string
 	tid        string
 }
