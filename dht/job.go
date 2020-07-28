@@ -10,6 +10,8 @@ import (
 
 const examplehash = "0271e29577a33ce47dc38c78240f2363bcb4ef7c"
 
+const concurrentConnPerJob = 1
+
 type infohash [20]byte
 
 type jobStatus int
@@ -20,12 +22,27 @@ const (
 )
 
 type job struct {
-	hash     infohash
-	metadata string
-	peers    []string
-	nodes    []*node // last node is tne one been queried or to be queried.
-	status   jobStatus
-	priv     *Dht
+	hash      infohash
+	metadata  string
+	peers     []compactAddr
+	peerConns []*peerConn
+	nodes     []*node // last node is tne one been queried or to be queried.
+	status    jobStatus
+	priv      *Dht
+}
+
+func (job *job) download() {
+	for {
+		if len(job.peers) == 0 {
+			return
+		}
+		if len(job.peerConns) >= concurrentConnPerJob {
+			return
+		}
+
+		job.peerConns = append(job.peerConns, newPeerConn(job, job.peers[0]))
+		job.peers = job.peers[1:len(job.peers)]
+	}
 }
 
 func (job *job) processGetPeersRes(node *node, buf []byte) error {
@@ -58,8 +75,7 @@ func (job *job) processGetPeersRes(node *node, buf []byte) error {
 
 	// got peers
 	if len(res.R.Values) > 0 {
-		job.peers = append(job.peers, res.R.Values...)
-		log.Printf("peers: %#v", job.peers)
+		job.appendPeers(res.R.Values)
 	}
 
 	job.removeLastNode()
@@ -278,4 +294,22 @@ func (job *job) countNodesByStatus(status nodeStatus) int {
 		}
 	}
 	return n
+}
+
+func (job *job) appendPeers(peers []string) {
+	m := make(map[string]bool)
+	for _, peer := range peers {
+		m[peer] = true
+	}
+
+	for _, peer := range job.peers {
+		m[string(peer[:])] = true
+	}
+
+	for peer := range m {
+		var ca compactAddr
+		copy(ca[:], peer)
+
+		job.peers = append(job.peers, ca)
+	}
 }

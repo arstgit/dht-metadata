@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"net"
 	"syscall"
 	"time"
 )
@@ -73,10 +72,11 @@ func (node *node) checkTid(tid string) error {
 	return fmt.Errorf("tid not equal")
 
 }
+
 func (node *node) allocateFd(efd int) {
 	fd := node.fd
 	if fd == -1 {
-		fd = allocateDgramSocket(efd)
+		fd = allocateSocket(syscall.SOCK_DGRAM, true)
 	}
 	node.fd = fd
 
@@ -87,27 +87,6 @@ func (node *node) allocateFd(efd int) {
 	if err := syscall.EpollCtl(efd, syscall.EPOLL_CTL_ADD, fd, &event); err != nil {
 		log.Fatal("epoll_ctl_add ", err)
 	}
-}
-
-func allocateDgramSocket(efd int) int {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.O_NONBLOCK|syscall.SOCK_DGRAM, 0)
-	if err != nil {
-		log.Fatal("allocateDgramSocket socket ", err)
-	}
-	if fd < 0 {
-		log.Fatal("fd < 0")
-	}
-
-	addr := syscall.SockaddrInet4{Port: 0}
-	n := copy(addr.Addr[:], net.ParseIP("0.0.0.0").To4())
-	if n != 4 {
-		log.Fatal("copy addr not 4 bytes")
-	}
-
-	syscall.Bind(fd, &addr)
-	syscall.Listen(fd, 1)
-
-	return fd
 }
 
 func (node *node) generateTid() {

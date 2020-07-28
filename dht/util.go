@@ -77,3 +77,28 @@ func stringToInfohash(s string) infohash {
 
 	return res
 }
+
+func allocateSocket(flag int, listen bool) int {
+	flag = syscall.O_NONBLOCK | flag
+
+	fd, err := syscall.Socket(syscall.AF_INET, flag, 0)
+	if err != nil {
+		log.Fatal("allocateDgramSocket socket ", err)
+	}
+	if fd < 0 {
+		log.Fatal("fd < 0")
+	}
+
+	if listen {
+		addr := syscall.SockaddrInet4{Port: 0}
+		n := copy(addr.Addr[:], net.ParseIP("0.0.0.0").To4())
+		if n != 4 {
+			log.Fatal("copy addr not 4 bytes")
+		}
+
+		syscall.Bind(fd, &addr)
+		syscall.Listen(fd, 1)
+	}
+
+	return fd
+}

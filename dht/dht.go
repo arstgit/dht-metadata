@@ -9,7 +9,7 @@ import (
 )
 
 const maxNodeNum = 100
-const jobTimeout = 5 * time.Second
+const jobTimeout = 2 * time.Second
 const farmTimeout = 10 * time.Second
 
 const (
@@ -20,7 +20,13 @@ const (
 )
 
 // router.utorrent.com
-var bootstraps = []string{"router.bittorrent.com:6881"}
+var bootstraps = []string{
+	"router.bittorrent.com:6881",
+	"router.utorrent.com:6881",
+	"router.bittorrent.com:6881",
+	"dht.transmissionbt.com:6881",
+	"dht.aelitis.com:6881",
+}
 
 type dhtStatus int
 
@@ -42,11 +48,11 @@ type Dht struct {
 func (dht *Dht) Run() {
 	farmTicker := time.NewTicker(10 * time.Second)
 	cleanTicker := time.NewTicker(5 * time.Second)
-	jobTicker := time.NewTicker(5 * time.Second)
+	jobTicker := time.NewTicker(1 * time.Second)
 	epollTimeout := 1000
 
 	// to be deleted
-	dht.jobs = append(dht.jobs, &job{priv: dht, hash: stringToInfohash(examplehash), peers: make([]string, 0), status: gettingPeers})
+	dht.jobs = append(dht.jobs, &job{priv: dht, hash: stringToInfohash(examplehash), peers: make([]compactAddr, 0), status: gettingPeers})
 
 	for {
 		select {
@@ -108,6 +114,8 @@ func (dht *Dht) farm() {
 }
 
 func (dht *Dht) doJob(job *job) {
+	job.download()
+
 	if job.status == gettingPeers {
 
 	thisJob:
@@ -195,7 +203,6 @@ func (dht *Dht) cleanNodes() {
 	for i, node := range dht.dummyJob.nodes {
 		if node.status == waitForPacket {
 			if time.Now().Sub(node.lastActive) > farmTimeout {
-				log.Panic()
 				dht.dummyJob.removeNode(i)
 			}
 		}
@@ -265,6 +272,12 @@ func (dht *Dht) PrintStats() string {
 	}
 
 	s += "\n"
+
+	for _, job := range dht.jobs {
+		for _, peerConn := range job.peerConns {
+			s += fmt.Sprintf("peers: %v\n", peerConn)
+		}
+	}
 
 	log.Printf("%s", s)
 	return s
