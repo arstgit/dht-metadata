@@ -8,7 +8,9 @@ import (
 	"time"
 )
 
-const maxNodeNum = 200
+const maxNodeNum = 100
+const jobTimeout = 5 * time.Second
+const farmTimeout = 10 * time.Second
 
 const (
 	// EPOLLET uint32
@@ -18,7 +20,7 @@ const (
 )
 
 // router.utorrent.com
-const bootstrap1 = "82.221.103.244:6881"
+var bootstraps = []string{"router.bittorrent.com:6881"}
 
 type dhtStatus int
 
@@ -29,10 +31,39 @@ const (
 
 // Dht maintain running status.
 type Dht struct {
-	efd    int
-	selfid nodeid
-	status dhtStatus
-	nodes  []*node
+	efd      int
+	selfid   nodeid
+	status   dhtStatus
+	jobs     []*job
+	dummyJob *job
+}
+
+// Run send packets while listening active node port.
+func (dht *Dht) Run() {
+	farmTicker := time.NewTicker(10 * time.Second)
+	cleanTicker := time.NewTicker(5 * time.Second)
+	jobTicker := time.NewTicker(5 * time.Second)
+	epollTimeout := 1000
+
+	// to be deleted
+	dht.jobs = append(dht.jobs, &job{priv: dht, hash: stringToInfohash(examplehash), peers: make([]string, 0), status: gettingPeers})
+
+	for {
+		select {
+		case <-farmTicker.C:
+			dht.farm()
+		case <-cleanTicker.C:
+			dht.cleanNodes()
+		case <-jobTicker.C:
+			dht.doJobs()
+		default:
+			dht.waitEpoll(epollTimeout)
+
+			dht.PrintStats()
+		}
+	}
+
+	// ticker.Stop()
 }
 
 // New Create a listening socket, allocate spaces for storing nodes and dht status.
@@ -40,9 +71,12 @@ func New() *Dht {
 	dht := new(Dht)
 
 	dht.selfid = generateRandNodeid()
+	dht.dummyJob = &job{priv: dht}
 
 	// push bootstrap node into dht.
-	dht.addNode(convertToCompactAddr(bootstrap1), generateRandNodeid())
+	for _, bootstrap := range bootstraps {
+		dht.dummyJob.appendNode(convertToCompactAddr(bootstrap), generateRandNodeid())
+	}
 
 	efd, err := syscall.EpollCreate1(0)
 	if err != nil {
@@ -55,45 +89,84 @@ func New() *Dht {
 	return dht
 }
 
-// Run send packets while listening active node port.
-func (dht *Dht) Run() {
-	sendFindNodeRandomTicker := time.NewTicker(3 * time.Second)
-	cleanUnhealthyNodesTicker := time.NewTicker(5 * time.Second)
-	epollTimeout := 500
-
-	for {
-		select {
-		case <-sendFindNodeRandomTicker.C:
-			dht.SendFindNodeRandom()
-		case <-cleanUnhealthyNodesTicker.C:
-			dht.cleanNodes()
-		default:
-			dht.waitEpoll(epollTimeout)
-		}
-	}
-
-	// ticker.Stop()
-}
-
 // FreeDht free allocated space.
-func (dht *Dht) FreeDht() {
-	syscall.Close(dht.efd)
-
-	for _, node := range dht.nodes {
-		err := syscall.Close(node.fd)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	return
+//func (dht *Dht) FreeDht() {
+//	syscall.Close(dht.efd)
+//
+//	for _, node := range dht.dummyJob.nodes {
+//		err := syscall.Close(node.fd)
+//		if err != nil {
+//			log.Fatal(err)
+//		}
+//	}
+//
+//	return
+//}
+//
+func (dht *Dht) farm() {
+	dht.dummyJob.SendFindNodeRandom()
 }
 
-// YieldStatus return dht running status as a string.
-func (dht *Dht) YieldStatus() string {
-	s := fmt.Sprintf("%#v", dht)
+func (dht *Dht) doJob(job *job) {
+	if job.status == gettingPeers {
 
-	return s
+	thisJob:
+		for {
+			node := job.getLastNode()
+			if node == nil {
+				log.Print("getjoblastnode return nil")
+				return
+			}
+
+			switch node.status {
+			case newAdded:
+				job.SendGetPeers(node)
+				break thisJob
+			case waitForPacket:
+				if time.Now().Sub(node.lastActive) > jobTimeout {
+					job.removeNode(len(job.nodes) - 1)
+				}
+			default:
+				log.Fatalf("node not valid status, job: %#v", node)
+			}
+		}
+	} else {
+		log.Fatalf("doJob not valid status, job: %#v", job)
+	}
+}
+
+func (dht *Dht) doJobs() {
+	for _, job := range dht.jobs {
+		dht.doJob(job)
+	}
+}
+
+func (dht *Dht) processRecv(fd int, buf []byte, n int, fromAddr syscall.Sockaddr) {
+	node := dht.findNodeByFd(fd)
+
+	if node == nil {
+		log.Fatalf("node is nil, %d", fd)
+	}
+	if node.status != waitForPacket {
+		log.Fatal("node status not waitforpacket")
+	}
+
+	log.Printf("received package type %s", node.sentType)
+
+	switch node.sentType {
+	case "find_node":
+		err := node.priv.processFindNodeRes(node, buf)
+		if err != nil {
+			log.Print("processfindnoderes ", err)
+		}
+	case "get_peers":
+		err := node.priv.processGetPeersRes(node, buf)
+		if err != nil {
+			log.Print("processgetpeersres ", err)
+		}
+	default:
+		log.Fatal("node.sentType ", node.sentType)
+	}
 }
 
 func (dht *Dht) waitEpoll(timeout int) {
@@ -117,33 +190,40 @@ func (dht *Dht) waitEpoll(timeout int) {
 	}
 }
 
-func (dht *Dht) addNode(addr compactAddr, id nodeid) {
-	for _, node := range dht.nodes {
-		if id == node.id || addr == node.address {
-			return
-		}
-	}
-	dht.nodes = append(dht.nodes, &node{id: id, fd: -1, address: addr, lastActive: time.Now(), status: newAdded})
-}
-
 func (dht *Dht) cleanNodes() {
-	if len(dht.nodes) < 20 {
-		return
+	// delete timeout nodes
+	for i, node := range dht.dummyJob.nodes {
+		if node.status == waitForPacket {
+			if time.Now().Sub(node.lastActive) > farmTimeout {
+				log.Panic()
+				dht.dummyJob.removeNode(i)
+			}
+		}
 	}
 
 	// delete unhealthy nodes
-	for i, node := range dht.nodes {
+	for i, node := range dht.dummyJob.nodes {
 		if node.status == unhealthy {
-			dht.removeNode(i)
+			dht.dummyJob.removeNode(i)
 		}
+	}
+
+	if len(dht.dummyJob.nodes) < 20 {
+		return
 	}
 
 	// keep nodes num below maxNodeNum
 	for {
-		if len(dht.nodes) >= maxNodeNum {
-			i, _ := dht.getOldestNode()
+		if len(dht.dummyJob.nodes) > maxNodeNum {
+			i, _ := dht.dummyJob.getMinLastActiveNodeByStatus(newAdded)
+			if i == -1 {
+				i, _ = dht.dummyJob.getMinLastActiveNodeByStatus(receivedPacket)
+			}
+			if i < 0 {
+				log.Panic("can not get node, i < 0")
+			}
 
-			dht.removeNode(i)
+			dht.dummyJob.removeNode(i)
 		} else {
 			break
 		}
@@ -151,60 +231,41 @@ func (dht *Dht) cleanNodes() {
 
 }
 
-func (dht *Dht) removeNode(i int) {
-	node := dht.nodes[i]
-	if node.fd != -1 {
-		if node.status != waitForPacket {
-			log.Fatal("node status not waitforpacket")
-		}
-		err := syscall.Close(node.fd)
-		if err != nil {
-			log.Fatal("close ", err)
-		}
-	}
-
-	dht.nodes[i] = dht.nodes[len(dht.nodes)-1]
-	dht.nodes = dht.nodes[:len(dht.nodes)-1]
-}
-
-func (dht *Dht) getNode(flags nodeStatus) (int, *node) {
-	for i, node := range dht.nodes {
-		if (node.status & flags) == node.status {
-			return i, dht.nodes[i]
-		}
-	}
-
-	return -1, nil
-}
-
-func (dht *Dht) getOldestNode() (int, *node) {
-	if len(dht.nodes) == 0 {
-		log.Fatal("node num == 0")
-	}
-
-	minLastActiveNode := dht.nodes[0]
-
-	i := 0
-	for _, node := range dht.nodes {
-		if minLastActiveNode.lastActive.After(node.lastActive) {
-			minLastActiveNode = node
-			i++
-		}
-	}
-
-	return i, minLastActiveNode
-}
-
 func (dht *Dht) findNodeByFd(fd int) *node {
 	if !(fd > 2) {
 		log.Fatal("findNodeByFd, invalid fd")
 	}
 
-	for _, node := range dht.nodes {
+	for _, node := range dht.dummyJob.nodes {
 		if node.fd == fd {
 			return node
 		}
 	}
 
+	for _, job := range dht.jobs {
+		for _, node := range job.nodes {
+			if node.fd == fd {
+				return node
+			}
+		}
+	}
+
 	return nil
+}
+
+// PrintStats print internal information.
+func (dht *Dht) PrintStats() string {
+	job := dht.dummyJob
+
+	s := "\n\n"
+	s += fmt.Sprintf("dummyJob: newAdded: %d, waitForPacket: %d, receivedPacket: %d, unhealthy: %d\n", job.countNodesByStatus(newAdded), job.countNodesByStatus(waitForPacket), job.countNodesByStatus(receivedPacket), job.countNodesByStatus(unhealthy))
+
+	for _, job := range dht.jobs {
+		s += fmt.Sprintf("hashJob: newAdded: %d, waitForPacket: %d, receivedPacket: %d, unhealthy: %d, peers: %d\n", job.countNodesByStatus(newAdded), job.countNodesByStatus(waitForPacket), job.countNodesByStatus(receivedPacket), job.countNodesByStatus(unhealthy), len(job.peers))
+	}
+
+	s += "\n"
+
+	log.Printf("%s", s)
+	return s
 }

@@ -7,11 +7,9 @@ import (
 )
 
 func main() {
-	log.Println("Starting.")
-
 	dht := dht.New()
 
 	dht.Run()
 
-	dht.FreeDht()
+	log.Fatal("unexpected position")
 }
