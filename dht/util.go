@@ -3,6 +3,7 @@ package dht
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"math/rand"
 	"net"
@@ -13,6 +14,11 @@ import (
 )
 
 type compactAddr [6]byte
+
+func (ca compactAddr) toDialAddr() string {
+	port := int(binary.BigEndian.Uint16(ca[4:6]))
+	return fmt.Sprintf("%o.%o.%o.%o:%d", int(ca[0]), int(ca[1]), int(ca[2]), int(ca[3]), port)
+}
 
 func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
 	ip1 := ca[:4]
@@ -30,6 +36,16 @@ func generateRandNodeid() nodeid {
 	for i := 0; i < 5; i++ {
 		copy(id[i*4:], (*[4]byte)(unsafe.Pointer(&r))[:])
 	}
+
+	// Azureus-style uses the following encoding: '-', two characters for client id, four ascii digits for version number, '-', followed by random numbers.
+	// -qB4250-
+	nodeidPrefix := "2d7142343235302d"
+	prefixBuf, err := hex.DecodeString(nodeidPrefix)
+	if err != nil {
+		log.Panic("decode nodeidprefix")
+	}
+
+	copy(id[0:8], prefixBuf)
 
 	return id
 }

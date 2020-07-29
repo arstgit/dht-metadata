@@ -8,30 +8,90 @@ import (
 	"github.com/anacrolix/torrent/bencode"
 )
 
-const examplehash = "0271e29577a33ce47dc38c78240f2363bcb4ef7c"
-
-const concurrentConnPerJob = 1
-
 type infohash [20]byte
 
 type jobStatus int
 
 const (
 	gettingPeers jobStatus = 1 << iota
+	pauseGettingPeers
 	done
 )
 
 type job struct {
-	hash      infohash
-	metadata  string
-	peers     []compactAddr
-	peerConns []*peerConn
-	nodes     []*node // last node is tne one been queried or to be queried.
-	status    jobStatus
-	priv      *Dht
+	hash         infohash
+	metadata     string
+	peers        []compactAddr
+	peerConns    []*peerConn
+	nodes        []*node // last node is tne one been queried or to be queried.
+	status       jobStatus
+	priv         *Dht
+	visitedPeers map[string]bool
+}
+
+func (job *job) doJob() {
+	job.download()
+
+	// shift exceeded nodes
+	if len(job.nodes) > 200 {
+		job.nodes = job.nodes[len(job.nodes)-200:]
+	}
+
+	if job.status == gettingPeers {
+		if len(job.peers) >= maxPeersPerJob {
+			job.status = pauseGettingPeers
+			return
+		}
+
+	thisJob:
+		for {
+			node := job.getLastNode()
+			if node == nil {
+				log.Print("getjoblastnode return nil")
+				return
+			}
+
+			switch node.status {
+			case newAdded:
+				job.SendGetPeers(node)
+				break thisJob
+			case waitForPacket:
+				if time.Now().Sub(node.lastQuery) > jobNodeTimeout {
+					job.removeNode(len(job.nodes) - 1)
+					// this node timeout, try next one
+				} else {
+					break thisJob
+				}
+			case unhealthy:
+				job.removeNode(len(job.nodes) - 1)
+				// problematic node, try next one
+			default:
+				log.Fatalf("node not valid status, job: %#v", node)
+			}
+		}
+		return
+	} else if job.status == pauseGettingPeers {
+		if len(job.peers) < maxPeersPerJob {
+			job.status = gettingPeers
+			return
+		}
+
+	} else {
+		log.Fatalf("doJob not valid status, job: %#v", job)
+	}
 }
 
 func (job *job) download() {
+	job.cleanPeerConn()
+	job.populatePeerConn()
+
+	for _, peerConn := range job.peerConns {
+		peerConn.parseBuf()
+		peerConn.sendOutBuf()
+	}
+}
+
+func (job *job) populatePeerConn() {
 	for {
 		if len(job.peers) == 0 {
 			return
@@ -45,6 +105,14 @@ func (job *job) download() {
 	}
 }
 
+func (job *job) cleanPeerConn() {
+	for i := len(job.peerConns) - 1; i > -1; i-- {
+		if job.peerConns[i].useless() {
+			job.removePeerConn(i)
+		}
+	}
+
+}
 func (job *job) processGetPeersRes(node *node, buf []byte) error {
 	type getPeersRes struct {
 		T string `bencode:"t"`
@@ -167,7 +235,7 @@ func (job *job) SendFindNodeRandom() {
 	if node == nil {
 		node = job.priv.dummyJob.getNodeByStatus(receivedPacket)
 		if node == nil {
-			log.Fatal("getNode return nil")
+			log.Panic("getNode return nil")
 		}
 	}
 
@@ -189,6 +257,23 @@ func (job *job) SendFindNodeRandom() {
 	node.setStatus(waitForPacket)
 }
 
+func (job *job) removePeerConn(i int) {
+	if i < 0 {
+		return
+	}
+
+	peerConn := job.peerConns[i]
+	if peerConn.fd != -1 {
+		err := syscall.Close(peerConn.fd)
+		if err != nil {
+			log.Fatal("close ", err)
+		}
+	}
+
+	job.peerConns[i] = job.peerConns[len(job.peerConns)-1]
+	job.peerConns = job.peerConns[:len(job.peerConns)-1]
+}
+
 func (job *job) removeLastNode() {
 	job.removeNode(len(job.nodes) - 1)
 }
@@ -200,6 +285,7 @@ func (job *job) removeNode(i int) {
 
 	node := job.nodes[i]
 	if node.fd != -1 {
+		// only waitForPacket nodes have valid fds
 		if node.status != waitForPacket {
 			log.Fatal("node status not waitforpacket")
 		}
@@ -297,16 +383,19 @@ func (job *job) countNodesByStatus(status nodeStatus) int {
 }
 
 func (job *job) appendPeers(peers []string) {
-	m := make(map[string]bool)
+	m := job.visitedPeers
+
 	for _, peer := range peers {
+		if len(peer) != 6 {
+			log.Panic("peer len not 6")
+		}
+
+		_, ok := m[peer]
+		if ok {
+			continue
+		}
 		m[peer] = true
-	}
 
-	for _, peer := range job.peers {
-		m[string(peer[:])] = true
-	}
-
-	for peer := range m {
 		var ca compactAddr
 		copy(ca[:], peer)
 

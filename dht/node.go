@@ -41,6 +41,7 @@ func (node *node) setStatus(status nodeStatus) {
 	switch status {
 	case waitForPacket:
 		node.lastQuery = time.Now()
+		node.lastActive = time.Now()
 	case receivedPacket:
 		err := syscall.Close(node.fd)
 		if err != nil {
@@ -64,6 +65,42 @@ func (node *node) setStatus(status nodeStatus) {
 	node.status = status
 }
 
+func (node *node) onEvent(fd int, events int) {
+	// we expect epollin only
+	if !((events & syscall.EPOLLIN) == events) {
+		log.Panic("not only epollin")
+	}
+
+	buf := make([]byte, 1472)
+	_, _, err := syscall.Recvfrom(fd, buf, 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if node == nil {
+		log.Fatalf("node is nil, %d", fd)
+	}
+	if node.status != waitForPacket {
+		log.Fatal("node status not waitforpacket")
+	}
+
+	log.Printf("received package type %s", node.sentType)
+
+	switch node.sentType {
+	case "find_node":
+		err := node.priv.processFindNodeRes(node, buf)
+		if err != nil {
+			log.Print("processfindnoderes ", err)
+		}
+	case "get_peers":
+		err := node.priv.processGetPeersRes(node, buf)
+		if err != nil {
+			log.Print("processgetpeersres ", err)
+		}
+	default:
+		log.Fatal("node.sentType ", node.sentType)
+	}
+}
 func (node *node) checkTid(tid string) error {
 	if node.tid == tid {
 		return nil
