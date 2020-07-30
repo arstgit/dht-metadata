@@ -225,7 +225,6 @@ func (p *peerConn) onEvent(fd int, events int) {
 	}
 
 	if (events & syscall.EPOLLIN) != 0 {
-		log.Print("\x07")
 		p.read()
 	}
 

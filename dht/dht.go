@@ -11,14 +11,13 @@ import (
 const farmTimeout = 15 * time.Second
 const jobNodeTimeout = 1 * time.Second
 const peerSynTimeout = 5 * time.Second
-const peerConnectedTimeout = 30 * time.Second
+const peerConnectedTimeout = 90 * time.Second
 const epollTimeout = 200
 
-const examplehash = "1272B6F0A25AE3176BAE5325700A54B061D891D6"
-
+const examplehash = "4e84408183c0a37a3f26f871699b98bf6f66e07b"
 const maxNodeNum = 50
-const concurrentConnPerJob = 300
-const maxPeersPerJob = 400
+const concurrentConnPerJob = 10000
+const maxPeersPerJob = 1000
 
 const (
 	// EPOLLET uint32
@@ -233,7 +232,7 @@ func (dht *Dht) PrintStats() string {
 	s += fmt.Sprintf("dummyJob: newAdded: %d, waitForPacket: %d, receivedPacket: %d, unhealthy: %d\n", job.countNodesByStatus(newAdded), job.countNodesByStatus(waitForPacket), job.countNodesByStatus(receivedPacket), job.countNodesByStatus(unhealthy))
 
 	for _, job := range dht.jobs {
-		s += fmt.Sprintf("hashJob: newAdded: %d, waitForPacket: %d, receivedPacket: %d, unhealthy: %d, peers: %d\n", job.countNodesByStatus(newAdded), job.countNodesByStatus(waitForPacket), job.countNodesByStatus(receivedPacket), job.countNodesByStatus(unhealthy), len(job.peers))
+		s += fmt.Sprintf("hashJob: newAdded: %d, waitForPacket: %d, receivedPacket: %d, unhealthy: %d, peers: %d, triedpeers: %d\n", job.countNodesByStatus(newAdded), job.countNodesByStatus(waitForPacket), job.countNodesByStatus(receivedPacket), job.countNodesByStatus(unhealthy), len(job.peers), len(job.visitedPeers))
 	}
 
 	s += "\n"
