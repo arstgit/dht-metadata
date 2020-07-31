@@ -8,13 +8,15 @@ import (
 	"time"
 )
 
-const farmTimeout = 15 * time.Second
+const farmTimeout = 5 * time.Second
 const jobNodeTimeout = 1 * time.Second
 const peerSynTimeout = 5 * time.Second
 const peerConnectedTimeout = 90 * time.Second
 const epollTimeout = 200
 
-const examplehash = "4e84408183c0a37a3f26f871699b98bf6f66e07b"
+//const examplehash = "4e84408183c0a37a3f26f871699b98bf6f66e07b"
+
+const examplehash = "0000000000000000000000000000000000000000"
 const maxNodeNum = 50
 const concurrentConnPerJob = 10000
 const maxPeersPerJob = 1000
@@ -30,7 +32,6 @@ const (
 var bootstraps = []string{
 	"router.bittorrent.com:6881",
 	"router.utorrent.com:6881",
-	"router.bittorrent.com:6881",
 	"dht.transmissionbt.com:6881",
 	"dht.aelitis.com:6881",
 }
@@ -119,11 +120,19 @@ func (dht *Dht) farm() {
 	if len(dht.dummyJob.nodes) == 0 {
 		// push bootstrap node into dht.
 		for _, bootstrap := range bootstraps {
-			dht.dummyJob.appendNode(convertToCompactAddr(bootstrap), generateRandNodeid())
+			dht.dummyJob.appendNodeFromCompactAddr(convertToCompactAddr(bootstrap), generateRandNodeid())
 		}
 	}
 
-	dht.dummyJob.SendFindNodeRandom()
+	node := dht.dummyJob.getNodeByStatus(newAdded)
+	if node == nil {
+		node = dht.dummyJob.getNodeByStatus(receivedPacket)
+		if node == nil {
+			log.Panic("getNode return nil")
+		}
+	}
+
+	dht.dummyJob.SendFindNode(node, stringToNodeID(examplehash))
 	dht.cleanNodes()
 }
 

@@ -17,7 +17,7 @@ type compactAddr [6]byte
 
 func (ca compactAddr) toDialAddr() string {
 	port := int(binary.BigEndian.Uint16(ca[4:6]))
-	return fmt.Sprintf("%o.%o.%o.%o:%d", int(ca[0]), int(ca[1]), int(ca[2]), int(ca[3]), port)
+	return fmt.Sprintf("%d.%d.%d.%d:%d", int(ca[0]), int(ca[1]), int(ca[2]), int(ca[3]), port)
 }
 
 func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
@@ -74,6 +74,24 @@ func convertToCompactAddr(s string) compactAddr {
 
 	copy(addr[:], append([]byte(ip1), port2...))
 	return addr
+}
+
+func stringToNodeID(s string) nodeid {
+	if len(s) != 40 {
+		log.Fatal("nodeid len not 40")
+	}
+
+	var res [20]byte
+
+	n, err := hex.Decode(res[:], []byte(s))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if n != 20 {
+		log.Fatal("decoded return n not 20")
+	}
+
+	return res
 }
 
 func stringToInfohash(s string) infohash {
