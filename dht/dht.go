@@ -8,18 +8,21 @@ import (
 	"time"
 )
 
+const dhtVersionMsg = "A2\x00\x03"
+
 const farmTimeout = 5 * time.Second
-const jobNodeTimeout = 1 * time.Second
-const peerSynTimeout = 5 * time.Second
-const peerConnectedTimeout = 90 * time.Second
+const jobNodeTimeout = 3 * time.Second
+const peerSynTimeout = 10 * time.Second
+const peerConnectedTimeout = 60 * time.Second
 const epollTimeout = 200
 
-//const examplehash = "4e84408183c0a37a3f26f871699b98bf6f66e07b"
+const examplehash = "4e84408183c0a37a3f26f871699b98bf6f66e07b"
 
-const examplehash = "0000000000000000000000000000000000000000"
+//const examplehash = "0000000000000000000000000000000000000000"
 const maxNodeNum = 50
 const concurrentConnPerJob = 10000
 const maxPeersPerJob = 1000
+const neighborLen = 8
 
 const (
 	// EPOLLET uint32
@@ -62,7 +65,7 @@ func (dht *Dht) Run() {
 	statsTicker := time.NewTicker(5 * time.Second)
 
 	// to be deleted
-	dht.jobs = append(dht.jobs, &job{priv: dht, hash: stringToInfohash(examplehash), peers: make([]compactAddr, 0), status: gettingPeers, visitedPeers: make(map[string]bool)})
+	dht.jobs = append(dht.jobs, &job{priv: dht, hash: stringToInfohash(examplehash), peers: make([]compactAddr, 0), status: gettingPeers, visitedPeers: make(map[string]bool), checkCloser: false})
 
 	dht.farm()
 	for {

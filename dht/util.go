@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -30,12 +31,8 @@ func (ca compactAddr) toSockAddr() syscall.SockaddrInet4 {
 	return addr
 }
 
-func generateRandNodeid() nodeid {
-	var id nodeid
-	r := rand.Uint32()
-	for i := 0; i < 5; i++ {
-		copy(id[i*4:], (*[4]byte)(unsafe.Pointer(&r))[:])
-	}
+func generateRandPeerid() nodeid {
+	id := generate20Bytes()
 
 	// Azureus-style uses the following encoding: '-', two characters for client id, four ascii digits for version number, '-', followed by random numbers.
 	// -qB4250-
@@ -48,6 +45,21 @@ func generateRandNodeid() nodeid {
 	copy(id[0:8], prefixBuf)
 
 	return id
+}
+
+func generate20Bytes() [20]byte {
+	var id [20]byte
+	rand.Seed(time.Now().UnixNano())
+	r := rand.Uint32()
+	for i := 0; i < 5; i++ {
+		copy(id[i*4:], (*[4]byte)(unsafe.Pointer(&r))[:])
+	}
+
+	return id
+}
+
+func generateRandNodeid() nodeid {
+	return generate20Bytes()
 }
 
 func convertToCompactAddr(s string) compactAddr {

@@ -101,6 +101,47 @@ func (node *node) onEvent(fd int, events int) {
 		log.Fatal("node.sentType ", node.sentType)
 	}
 }
+
+func bitFirstBigger(id1 [20]byte, id2 [20]byte) bool {
+	for i := 0; i < 20; i++ {
+		if id1[i] > id2[i] {
+			return true
+		}
+		if id1[i] < id2[i] {
+			return false
+		}
+	}
+
+	return false
+}
+
+func bitOp(operator string, id1 [20]byte, id2 [20]byte) [20]byte {
+	var res [20]byte
+
+	switch operator {
+	case "xor":
+		for i := 0; i < 20; i++ {
+			res[i] = id1[i] ^ id2[i]
+		}
+	case "add":
+		carry := byte(0x00)
+		for i := 160 - 1; i > -1; i-- {
+			byteIndex := i / 8
+			offset := 7 - (i % 8)
+			op1 := (id1[byteIndex] >> offset) & 0x01
+			op2 := (id2[byteIndex] >> offset) & 0x01
+			sum := op1 + op2 + carry
+			r := sum & 0x01
+			carry = (sum >> 1) & 0x01
+			res[byteIndex] |= (r << offset)
+		}
+	default:
+		log.Panicf("invalid operator %s", operator)
+	}
+
+	return res
+}
+
 func (node *node) checkTid(tid string) error {
 	if node.tid == tid {
 		return nil
